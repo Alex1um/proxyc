@@ -3,6 +3,10 @@
 #include <pthread.h>
 #include <stdio.h>
 
+#define Gb * 1073741824
+#define Mb * 1048576
+#define Kb * 1024
+
 typedef struct s_entry {
   char *key;
   char *value;
@@ -12,6 +16,9 @@ typedef struct s_hash_table {
   HashEntry *entries;
   size_t size;
   pthread_mutex_t mutex;
+  size_t get_attemts;
+  size_t get_succeed;
+  size_t available_space;
 } HashTable;
 
 size_t djb2_hash(unsigned char *str)
@@ -26,13 +33,13 @@ size_t djb2_hash(unsigned char *str)
 
 size_t simple_hash(char *key) {
   size_t i = 0;
-  for (int j = 0; j < strlen(key); j++) i += key[j] * 31 + ((j + 1) << 5);
+  for (int j = 0; j < strlen(key); j++) i += key[j] * 31 * (j + 1);
   return i;
 }
 
-size_t jenkins_one_at_a_time_hash(char *key, size_t len)
+size_t jenkins_one_at_a_time_hash(char *key)
 {
-    size_t hash, i;
+    size_t hash, i, len = strlen(key);
     for(hash = i = 0; i < len; ++i)
     {
         hash += key[i];
@@ -46,10 +53,20 @@ size_t jenkins_one_at_a_time_hash(char *key, size_t len)
 }
 
 size_t ht_hash(char *key) {
-  return simple_hash(key);
+  return jenkins_one_at_a_time_hash(key);
 }
 
-HashTable *ht_create(size_t size) {
+void ht_monitor(HashTable *tb) {
+  while (1) {
+    if (pthread_mutex_trylock(&tb->mutex) == 0) {
+      printf("stats: get %ld out of %ld; ratio: %f\n", tb->get_succeed, tb->get_attemts, (float)tb->get_succeed / (float)tb->get_attemts);
+      pthread_mutex_unlock(&tb->mutex);
+    }
+    sleep(1);
+  }
+}
+
+HashTable *ht_create(size_t size, size_t max_capacity_b) {
   HashTable *table = malloc(sizeof(HashTable));
   if (table == NULL) {
     return NULL;
@@ -73,6 +90,9 @@ HashTable *ht_create(size_t size) {
   }
 
   table->size = size;
+  table->get_attemts = 0;
+  table->get_succeed = 0;
+  table->available_space = max_capacity_b;
 
   return table;
 }
@@ -98,9 +118,13 @@ char *ht_get(HashTable *table, char *key) {
   size_t index = hash % table->size;
 
   HashEntry entry = table->entries[index];
+  if (entry.key != NULL) {
+    table->get_attemts++;
+  }
   printf("get: %d - %d - %s == %s\n", hash, index, entry.key, key);
   if (entry.value != NULL && strcmp(entry.key, key) == 0) {
-    printf("found key: %s\n", key);
+    // printf("found key: %s\n", key);
+    table->get_succeed++;
     pthread_mutex_unlock(&table->mutex);
     return entry.value;
   }
@@ -124,22 +148,33 @@ void ht_set(HashTable *table, char *key, char *value) {
   size_t hash = ht_hash(key);
   size_t index = hash % table->size;
   
-  pthread_mutex_lock(&table->mutex);
+  size_t lenv = strlen(value);
+  size_t lenk = strlen(key);
   HashEntry *entry = &table->entries[index];
+
+  pthread_mutex_lock(&table->mutex);
+  size_t lene = (entry->value != NULL) ? strlen(entry->value) : 0;
+  size_t lenek = (entry->key != NULL) ? strlen(entry->key) : 0;
   
   if (entry->value != NULL && entry->key != NULL) {
     if (strcmp(entry->key, key) == 0) {
-      entry->value = ht_realloc(entry->value, sizeof(char) * (strlen(value) + 1 + strlen(entry->value) + 1));
-      if (entry->value) {
-        strcat(entry->value, value);
-      } else {
-        entry->key = NULL;
-        entry->value = NULL;
+      if (lene < lenv && table->available_space >= lenv) {
+        table->available_space += lene + 1;
+        entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + lene + 1));
+        if (entry->value) {
+          table->available_space -= (lene + lenv + 1);
+          strcat(entry->value, value);
+        } else {
+          entry->key = NULL;
+          entry->value = NULL;
+        }
       }
-    } else {
-      entry->value = ht_realloc(entry->value, sizeof(char) * (strlen(value) + 1));
-      entry->key = ht_realloc(entry->key, sizeof(char) * (strlen(key) + 1));
+    } else if (table->available_space >= (lenv + lenk - lenek - lene)) {
+      table->available_space += lene + lenek + 2;
+      entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + 1));
+      entry->key = ht_realloc(entry->key, sizeof(char) * (lenk + 1));
       if (entry->value && entry->key) {
+        table->available_space -= (lenv + lenk + 2);
         strcpy(entry->value, value);
         strcpy(entry->key, key);
       } else {
@@ -147,10 +182,11 @@ void ht_set(HashTable *table, char *key, char *value) {
         entry->value = NULL;
       }
     }
-  } else {
-    entry->value = malloc(sizeof(char) * (strlen(value) + 1));
-    entry->key = malloc(sizeof(char) * (strlen(key) + 1));
+  } else if (table->available_space >= lenv + lenk + 2) {
+    entry->value = malloc(sizeof(char) * (lenv + 1));
+    entry->key = malloc(sizeof(char) * (lenk + 1));
     if (entry->value != NULL && entry->key != NULL) {
+      table->available_space -= (lenv + lenk + 2);
       strcpy(entry->value, value);
       strcpy(entry->key, key);
     } else {

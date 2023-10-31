@@ -94,7 +94,14 @@ int close_client(ClientThreadArgs *arg) {
 void get_ht_key(char *request, char *out_key) {
     char *uri_start = strchr(request, ' ') + 1;
     char *uri_end = strchr(uri_start, ' ');
-    strncpy(out_key, uri_start, uri_end - uri_start);
+    char *ext = strrchr(uri_start, '.');
+    char *domain1 = strchr(uri_start, '.') + 1;
+    char *domain2 = strchr(domain1, '.') + 1;
+    if (domain2 == ext) {
+        strncpy(out_key, uri_start, uri_end - uri_start);
+    } else {
+        strncpy(out_key, domain1, uri_end - domain1);
+    }
 }
 
 int handle_client(void *arg) {
@@ -220,7 +227,7 @@ int handle_client(void *arg) {
 
 int main() {
     // Create a global cache.
-    global_cache = ht_create(150);
+    global_cache = ht_create(150, 4 Mb);
 
     // Create a server socket to listen for incoming client connections.
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -257,6 +264,9 @@ int main() {
     socklen_t client_address_len = sizeof(client_address);
     int client_socket;
 
+    pthread_t monitor;
+    pthread_create(&monitor, NULL, ht_monitor, global_cache);
+
     while ((client_socket = accept(server_socket, (struct sockaddr *) &client_address, &client_address_len)) >= 0) {
         // Create a new thread to handle the client connection.
         ClientThreadArgs *args = malloc(sizeof(ClientThreadArgs));
@@ -269,6 +279,8 @@ int main() {
 
         pthread_detach(thread);
     }
+
+    pthread_join(monitor, 0);
 
     // Close the server socket.
     close(server_socket);
