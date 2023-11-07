@@ -172,7 +172,21 @@ int handle_client(void *arg) {
         }
     }
 
-    int is_first_request = 1;
+    while (1) {
+        char response[1024];
+        ssize_t response_len = recv(args->dest_socket, response, sizeof(response) - 1, 0);
+        if (response_len <= 0) {
+            perror("read");
+            break;
+        }
+        ht_set(global_cache, ht_key, response);
+        // Forward the HTTP response to the client.
+        if (send(args->client_socket, response, response_len, 0) <= 0) {
+            perror("forward");
+            break;
+        }
+    }
+    ht_set_cancel(global_cache, ht_key);
     int max_fd = (args->dest_socket < args->client_socket) ? args->client_socket : args->dest_socket ;
     fd_set read_fds;
 
@@ -194,7 +208,6 @@ int handle_client(void *arg) {
             char response[1024];
             if (FD_ISSET(args->client_socket, &read_fds)) {
                 ssize_t response_len = recv(args->client_socket, response, sizeof(response) - 1, 0);
-                is_first_request = 0;
                 if (response_len <= 0) {
                     break;
                 }
@@ -207,9 +220,6 @@ int handle_client(void *arg) {
                 if (response_len <= 0) {
                     // perror("read");
                     break;
-                }
-                if (is_first_request) {
-                    ht_set(global_cache, ht_key, response);
                 }
                 // Forward the HTTP response to the client.
                 if (send(args->client_socket, response, response_len, 0) <= 0) {
@@ -254,7 +264,7 @@ int main() {
     }
 
     // Listen for incoming client connections.
-    if (listen(server_socket, 2) < 0) {
+    if (listen(server_socket, 50) < 0) {
         perror("listen");
         exit(1);
     }

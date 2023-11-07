@@ -10,6 +10,8 @@
 typedef struct s_entry {
   char *key;
   char *value;
+  char is_canceled;
+  char is_ready;
 } HashEntry;
 
 typedef struct s_hash_table {
@@ -122,7 +124,7 @@ char *ht_get(HashTable *table, char *key) {
     table->get_attemts++;
   }
   printf("get: %d - %d - %s == %s\n", hash, index, entry.key, key);
-  if (entry.value != NULL && strcmp(entry.key, key) == 0) {
+  if (entry.value != NULL && entry.is_canceled == 0 && entry.is_ready == 1 && strcmp(entry.key, key) == 0) {
     // printf("found key: %s\n", key);
     table->get_succeed++;
     pthread_mutex_unlock(&table->mutex);
@@ -138,6 +140,17 @@ char *ht_realloc(char *ptr, size_t new_size) {
   // free(ptr);
   // return new_ptr;
   return realloc(ptr, new_size);
+}
+
+void ht_set_cancel(HashTable *table, char *key) {
+  size_t hash = ht_hash(key);
+  size_t index = hash % table->size;
+  pthread_mutex_lock(&table->mutex);
+  HashEntry *entry = &table->entries[index];
+  if (entry && entry->key && entry->value) {
+    entry->is_ready = 1;
+  }
+  pthread_mutex_unlock(&table->mutex);
 }
 
 void ht_set(HashTable *table, char *key, char *value) {
@@ -168,11 +181,15 @@ void ht_set(HashTable *table, char *key, char *value) {
           entry->key = NULL;
           entry->value = NULL;
         }
+      } else {
+        entry->is_canceled = 1;
       }
     } else if (table->available_space >= (lenv + lenk - lenek - lene)) {
       table->available_space += lene + lenek + 2;
       entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + 1));
       entry->key = ht_realloc(entry->key, sizeof(char) * (lenk + 1));
+      entry->is_canceled = 0;
+      entry->is_ready = 0;
       if (entry->value && entry->key) {
         table->available_space -= (lenv + lenk + 2);
         strcpy(entry->value, value);
@@ -185,6 +202,8 @@ void ht_set(HashTable *table, char *key, char *value) {
   } else if (table->available_space >= lenv + lenk + 2) {
     entry->value = malloc(sizeof(char) * (lenv + 1));
     entry->key = malloc(sizeof(char) * (lenk + 1));
+    entry->is_canceled = 0;
+    entry->is_ready = 0;
     if (entry->value != NULL && entry->key != NULL) {
       table->available_space -= (lenv + lenk + 2);
       strcpy(entry->value, value);
