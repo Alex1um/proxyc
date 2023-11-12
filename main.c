@@ -106,12 +106,11 @@ void get_ht_key(char *request, char *out_key) {
 
 int handle_client(void *arg) {
     ClientThreadArgs *args = (ClientThreadArgs *) arg;
-
     // Read the HTTP request from the client.
     char request[1024];
     ssize_t request_len = recv(args->client_socket, request, sizeof(request) - 1, 0);
     if (request_len <= 0) {
-        perror("read");
+        perror("init client read");
         return close_client(args);
     }
     // puts(request);
@@ -122,17 +121,17 @@ int handle_client(void *arg) {
 
     char method[32];
     strncpy(method, request, strchr(request, ' ') - request);
+    
+    char *cached;
+    size_t cached_len = ht_get(global_cache, ht_key, &cached);
+    if (cached_len > 0) {
+        send(args->client_socket, cached, cached_len, 0);
+        return close_client(args);
+    } 
 
     // Parse the HTTP request to extract the request URL.
     char url[128], *port;
     parsenformat_request(request, url, &port);
-
-    char *cached = ht_get(global_cache, ht_key);
-
-    if (cached != NULL) {
-        send(args->client_socket, cached, strlen(cached), 0);
-        return close_client(args);
-    }
 
     // Forward the HTTP request to the destination server.
     struct addrinfo hints, *res;
@@ -164,31 +163,15 @@ int handle_client(void *arg) {
         }
     } else {
         // Write the HTTP request to the destination server.
-        // puts(request);
-        // puts(">>>>>>>>>");
         if (send(args->dest_socket, request, request_len, 0) <= 0) {
             perror("send");
             return close_client(args);
         }
     }
 
-    while (1) {
-        char response[1024];
-        ssize_t response_len = recv(args->dest_socket, response, sizeof(response) - 1, 0);
-        if (response_len <= 0) {
-            perror("read");
-            break;
-        }
-        ht_set(global_cache, ht_key, response);
-        // Forward the HTTP response to the client.
-        if (send(args->client_socket, response, response_len, 0) <= 0) {
-            perror("forward");
-            break;
-        }
-    }
-    ht_set_cancel(global_cache, ht_key);
     int max_fd = (args->dest_socket < args->client_socket) ? args->client_socket : args->dest_socket ;
     fd_set read_fds;
+    char is_first = 1;
 
     while (1) {
         FD_ZERO(&read_fds);
@@ -211,6 +194,10 @@ int handle_client(void *arg) {
                 if (response_len <= 0) {
                     break;
                 }
+                if (is_first) {
+                    is_first = 0;
+                    ht_set_cancel(global_cache, ht_key);
+                }
                 if (send(args->client_socket, response, response_len, 0) <= 0) {
                     break;
                 }
@@ -220,6 +207,9 @@ int handle_client(void *arg) {
                 if (response_len <= 0) {
                     // perror("read");
                     break;
+                }
+                if (is_first) {
+                    ht_set(global_cache, ht_key, response, response_len);
                 }
                 // Forward the HTTP response to the client.
                 if (send(args->client_socket, response, response_len, 0) <= 0) {
@@ -231,8 +221,11 @@ int handle_client(void *arg) {
             break;
         }
     }
+    if (is_first) {
+        ht_set_cancel(global_cache, ht_key);
+    }
     
-    close_client(args);
+    return close_client(args);
 }
 
 int main() {
