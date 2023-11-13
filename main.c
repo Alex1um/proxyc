@@ -93,12 +93,16 @@ int close_client(ClientThreadArgs *arg) {
 
 void get_ht_key(char *request, char *out_key) {
     char *uri_start = strchr(request, ' ') + 1;
+    char *url_start = strchr(request, '/') + 2;
+    char *path_start = strchr(url_start, '/');
     char *uri_end = strchr(uri_start, ' ');
-    char *ext = strrchr(uri_start, '.');
+    if (path_start == NULL || path_start > uri_end) {
+        path_start = uri_end;
+    }
     char *domain1 = strchr(uri_start, '.') + 1;
     char *domain2 = strchr(domain1, '.') + 1;
-    if (domain2 == ext) {
-        strncpy(out_key, uri_start, uri_end - uri_start);
+    if (domain2 == NULL || domain2 > path_start) {
+        strncpy(out_key, url_start, uri_end - url_start);
     } else {
         strncpy(out_key, domain1, uri_end - domain1);
     }
@@ -106,6 +110,7 @@ void get_ht_key(char *request, char *out_key) {
 
 int handle_client(void *arg) {
     ClientThreadArgs *args = (ClientThreadArgs *) arg;
+
     // Read the HTTP request from the client.
     char request[1024];
     ssize_t request_len = recv(args->client_socket, request, sizeof(request) - 1, 0);
@@ -196,6 +201,7 @@ int handle_client(void *arg) {
                 }
                 if (is_first) {
                     is_first = 0;
+                    printf("%s cached\n", ht_key);
                     ht_set_cancel(global_cache, ht_key);
                 }
                 if (send(args->client_socket, response, response_len, 0) <= 0) {
@@ -222,6 +228,7 @@ int handle_client(void *arg) {
         }
     }
     if (is_first) {
+        printf("%s cached\n", ht_key);
         ht_set_cancel(global_cache, ht_key);
     }
     
@@ -230,7 +237,7 @@ int handle_client(void *arg) {
 
 int main() {
     // Create a global cache.
-    global_cache = ht_create(150, 4 Mb);
+    global_cache = ht_create(100, 250 Mb, 3);
 
     // Create a server socket to listen for incoming client connections.
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);

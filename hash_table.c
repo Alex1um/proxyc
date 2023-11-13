@@ -12,6 +12,7 @@ typedef struct s_entry {
   char *value;
   size_t val_length;
   char is_ready;
+  size_t get_count;
 } HashEntry;
 
 typedef struct s_hash_table {
@@ -21,6 +22,7 @@ typedef struct s_hash_table {
   size_t get_attemts;
   size_t get_succeed;
   size_t available_space;
+  size_t max_get;
 } HashTable;
 
 size_t djb2_hash(unsigned char *str)
@@ -68,7 +70,7 @@ void ht_monitor(HashTable *tb) {
   }
 }
 
-HashTable *ht_create(size_t size, size_t max_capacity_b) {
+HashTable *ht_create(size_t size, size_t max_capacity_b, size_t max_get) {
   HashTable *table = malloc(sizeof(HashTable));
   if (table == NULL) {
     return NULL;
@@ -97,6 +99,7 @@ HashTable *ht_create(size_t size, size_t max_capacity_b) {
   table->get_attemts = 0;
   table->get_succeed = 0;
   table->available_space = max_capacity_b;
+  table->max_get = max_get;
 
   return table;
 }
@@ -125,11 +128,12 @@ size_t ht_get(HashTable *table, char *key, char **out) {
   if (entry->key != NULL) {
     table->get_attemts++;
   }
-  printf("get: %d - %d - %s == %s\n", hash, index, entry->key, key);
-  if (entry->value != NULL && entry->is_ready == 1 && strcmp(entry->key, key) == 0) {
+  printf("get: %ld - %ld - %s == %s\n", hash, index, entry->key, key);
+  if (entry->value != NULL && entry->is_ready == 1 && strcmp(entry->key, key) == 0 && entry->get_count < table->max_get) {
     // printf("found key: %s\n", key);
     table->get_succeed++;
     *out = entry->value;
+    entry->get_count++;
     pthread_mutex_unlock(&table->mutex);
     return entry->val_length;
   }
@@ -168,6 +172,14 @@ void ht_set_cancel(HashTable *table, char *key) {
   pthread_mutex_unlock(&table->mutex);
 }
 
+void ht_lock(HashTable *table) {
+  pthread_mutex_lock(&table->mutex);
+}
+
+void ht_unlock(HashTable *table) {
+  pthread_mutex_unlock(&table->mutex);
+}
+
 void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
   if (table == NULL || key == NULL || value == NULL) {
     return;
@@ -185,8 +197,8 @@ void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
   size_t lenek = (entry->key != NULL) ? strlen(entry->key) : 0;
   
   if (entry->value != NULL && entry->key != NULL) {
-    if (strcmp(entry->key, key) == 0) {
-      if (lene < lenv && table->available_space >= lenv) {
+    if (strcmp(entry->key, key) == 0 && entry->get_count < table->max_get) {
+      if (table->available_space >= lenv) {
         table->available_space += lene + 1;
         entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + lene + 1));
         if (entry->value) {
@@ -198,6 +210,7 @@ void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
           entry->value = NULL;
         }
       } else {
+        table->available_space += lene + lenek + 2;
         free(entry->value);
         free(entry->key);
         entry->val_length = 0;
