@@ -110,6 +110,7 @@ void get_ht_key(char *request, char *out_key) {
 
 int handle_client(void *arg) {
     ClientThreadArgs *args = (ClientThreadArgs *) arg;
+    pid_t id = gettid();
 
     // Read the HTTP request from the client.
     char request[1024];
@@ -127,11 +128,36 @@ int handle_client(void *arg) {
     char method[32];
     strncpy(method, request, strchr(request, ' ') - request);
     
-    char *cached;
-    size_t cached_len = ht_get(global_cache, ht_key, &cached);
+    char *cached, is_ready;
+    size_t cached_len = ht_get(global_cache, ht_key, &cached, &is_ready);
     if (cached_len > 0) {
-        send(args->client_socket, cached, cached_len, 0);
-        return close_client(args);
+        // printf("used cached %s\n", ht_key);
+        if (is_ready == 1) {
+            send(args->client_socket, cached, cached_len, 0);
+            return close_client(args);
+        } else {
+            size_t prev_cached = cached_len;
+            if (send(args->client_socket, cached, cached_len, 0) != cached_len) {
+                return close_client(args);
+            }
+            while (is_ready == 0) {
+                size_t cached_len = ht_get(global_cache, ht_key, &cached, &is_ready);
+                printf("new len: %ld > %ld\n", cached_len, prev_cached);
+                if (cached_len > prev_cached) {
+                    if (send(args->client_socket, &cached[prev_cached], cached_len - prev_cached, 0) != cached_len - prev_cached) {
+                        return close_client(args);
+                    }
+                } else if (cached_len < prev_cached) {
+                    return close_client(args);
+                }
+                prev_cached = cached_len;
+                usleep(1000);
+            }
+            size_t cached_len = ht_get(global_cache, ht_key, &cached, &is_ready);
+            if (cached_len > prev_cached) {
+                send(args->client_socket, cached + prev_cached, cached_len - prev_cached, 0);
+            }
+        }
     } 
 
     // Parse the HTTP request to extract the request URL.
@@ -215,7 +241,7 @@ int handle_client(void *arg) {
                     break;
                 }
                 if (is_first) {
-                    ht_set(global_cache, ht_key, response, response_len);
+                    ht_set(global_cache, ht_key, response, response_len, id);
                 }
                 // Forward the HTTP response to the client.
                 if (send(args->client_socket, response, response_len, 0) <= 0) {
@@ -237,7 +263,7 @@ int handle_client(void *arg) {
 
 int main() {
     // Create a global cache.
-    global_cache = ht_create(100, 250 Mb, 3);
+    global_cache = ht_create(100, 250 Mb, 1000000000);
 
     // Create a server socket to listen for incoming client connections.
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -286,6 +312,7 @@ int main() {
         // handle_client(args);
         pthread_t thread;
         pthread_create(&thread, NULL, handle_client, args);
+        
 
         pthread_detach(thread);
     }

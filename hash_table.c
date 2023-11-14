@@ -13,6 +13,7 @@ typedef struct s_entry {
   size_t val_length;
   char is_ready;
   size_t get_count;
+  pid_t owner;
 } HashEntry;
 
 typedef struct s_hash_table {
@@ -115,7 +116,7 @@ void ht_destroy(HashTable *table) {
   free(table);
 }
 
-size_t ht_get(HashTable *table, char *key, char **out) {
+size_t ht_get(HashTable *table, char *key, char **out, char *out_is_ready) {
   if (table == NULL || key == NULL) {
     return NULL;
   }
@@ -128,11 +129,12 @@ size_t ht_get(HashTable *table, char *key, char **out) {
   if (entry->key != NULL) {
     table->get_attemts++;
   }
-  printf("get: %ld - %ld - %s == %s\n", hash, index, entry->key, key);
-  if (entry->value != NULL && entry->is_ready == 1 && strcmp(entry->key, key) == 0 && entry->get_count < table->max_get) {
+  // printf("get: %ld - %ld - %s == %s\n", hash, index, entry->key, key);
+  if (entry->value != NULL && strcmp(entry->key, key) == 0 && entry->get_count < table->max_get) {
     // printf("found key: %s\n", key);
     table->get_succeed++;
     *out = entry->value;
+    *out_is_ready = entry->is_ready;
     entry->get_count++;
     pthread_mutex_unlock(&table->mutex);
     return entry->val_length;
@@ -180,7 +182,7 @@ void ht_unlock(HashTable *table) {
   pthread_mutex_unlock(&table->mutex);
 }
 
-void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
+void ht_set(HashTable *table, char *key, char *value, size_t new_len, pid_t thread) {
   if (table == NULL || key == NULL || value == NULL) {
     return;
   }
@@ -197,25 +199,27 @@ void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
   size_t lenek = (entry->key != NULL) ? strlen(entry->key) : 0;
   
   if (entry->value != NULL && entry->key != NULL) {
-    if (strcmp(entry->key, key) == 0 && entry->get_count < table->max_get) {
-      if (table->available_space >= lenv) {
-        table->available_space += lene + 1;
-        entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + lene + 1));
-        if (entry->value) {
-          table->available_space -= (lene + lenv + 1);
-          ht_cat(entry->value, lene, value, lenv);
-          entry->val_length += lenv;
+    if (strcmp(entry->key, key) == 0 && entry->get_count < table->max_get && entry->is_ready == 0) {
+      if (entry->owner == thread) {
+        if (table->available_space >= lenv) { // дозапись
+          table->available_space += lene + 1;
+          entry->value = ht_realloc(entry->value, sizeof(char) * (lenv + lene + 1));
+          if (entry->value) {
+            table->available_space -= (lene + lenv + 1);
+            ht_cat(entry->value, lene, value, lenv);
+            entry->val_length += lenv;
+          } else {
+            entry->key = NULL;
+            entry->value = NULL;
+          }
         } else {
-          entry->key = NULL;
+          table->available_space += lene + lenek + 2;
+          free(entry->value);
+          free(entry->key);
+          entry->val_length = 0;
           entry->value = NULL;
+          entry->key = NULL;
         }
-      } else {
-        table->available_space += lene + lenek + 2;
-        free(entry->value);
-        free(entry->key);
-        entry->val_length = 0;
-        entry->value = NULL;
-        entry->key = NULL;
       }
     } else if (table->available_space >= (lenv + lenk - lenek - lene)) {
       table->available_space += lene + lenek + 2;
@@ -235,12 +239,13 @@ void ht_set(HashTable *table, char *key, char *value, size_t new_len) {
   } else if (table->available_space >= lenv + lenk + 2) {
     entry->value = malloc(sizeof(char) * (lenv + 1));
     entry->key = malloc(sizeof(char) * (lenk + 1));
-    entry->is_ready = 0;
     if (entry->value != NULL && entry->key != NULL) {
       table->available_space -= (lenv + lenk + 2);
       ht_cpy(entry->value, value, lenv);
       strcpy(entry->key, key);
       entry->val_length = lenv;
+      entry->is_ready = 0;
+      entry->owner = thread;
     } else {
       entry->key = NULL;
       entry->value = NULL;
